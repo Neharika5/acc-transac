@@ -1,0 +1,57 @@
+package com.dtcc.intern.demo.service;
+
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+import java.util.Date;
+
+@Service
+public class JwtService {
+
+    @Value("${jwt.secret}")
+    private String secretKey;
+
+    private static final long ACCESS_TOKEN_VALIDITY = 5 * 60 * 1000; // 5 minutes
+    private static final long REFRESH_TOKEN_VALIDITY = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+    public String generateToken(UserAccount userDetails) {
+        return createToken(userDetails.getUsername(), ACCESS_TOKEN_VALIDITY);
+    }
+
+    public String generateRefreshToken(UserAccount userDetails) {
+        return createToken(userDetails.getUsername(), REFRESH_TOKEN_VALIDITY);
+    }
+
+    private String createToken(String username, long validity) {
+        return Jwts.builder()
+                .setSubject(username)
+                .setIssuedAt(new Date())
+                .setExpiration(new Date(System.currentTimeMillis() + validity))
+                .signWith(SignatureAlgorithm.HS512, secretKey)
+                .compact();
+    }
+
+    public String refreshAccessToken(String refreshToken) {
+        if (isTokenValid(refreshToken)) {
+            Claims claims = getClaims(refreshToken);
+            return createToken(claims.getSubject(), ACCESS_TOKEN_VALIDITY);
+        }
+        return null;
+    }
+
+    public boolean isTokenValid(String token) {
+        try {
+            getClaims(token);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private Claims getClaims(String token) {
+        return Jwts.parser().setSigningKey(secretKey).parseClaimsJws(token).getBody();
+    }
+}

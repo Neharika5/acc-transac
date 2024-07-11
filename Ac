@@ -1,0 +1,65 @@
+package com.dtcc.intern.demo.controller;
+
+import java.util.HashMap;
+import java.util.Map;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import com.dtcc.intern.demo.service.AuthenticationService;
+import com.dtcc.intern.demo.service.JwtService;
+import com.dtcc.intern.demo.dto.LoginUserDto;
+import com.dtcc.intern.demo.dto.RegisterUserDto;
+import com.dtcc.intern.demo.model.UserAccount;
+import com.dtcc.intern.demo.response.ResponseHandler;
+
+@RestController
+@CrossOrigin("*")
+@RequestMapping("/auth")
+public class AuthenticationController {
+
+    private final JwtService jwtService;
+    private final AuthenticationService authenticationService;
+
+    @Autowired
+    public AuthenticationController(JwtService jwtService, AuthenticationService authenticationService) {
+        this.jwtService = jwtService;
+        this.authenticationService = authenticationService;
+    }
+
+    @PostMapping("/signup")
+    public ResponseEntity<UserAccount> register(@RequestBody RegisterUserDto registerUserDto) {
+        UserAccount registeredUser = authenticationService.signup(registerUserDto);
+        return ResponseEntity.ok(registeredUser);
+    }
+
+    @PostMapping("/login")
+    public ResponseEntity<Object> authenticate(@RequestBody LoginUserDto loginUserDto) {
+        UserAccount authenticatedUser = authenticationService.authenticate(loginUserDto);
+        String jwtToken = jwtService.generateToken(authenticatedUser);
+        String refreshToken = jwtService.generateRefreshToken(authenticatedUser);
+
+        Map<String, Object> loginResponse = new HashMap<>();
+        loginResponse.put("user", authenticatedUser);
+        loginResponse.put("token", jwtToken);
+        loginResponse.put("refreshToken", refreshToken);
+
+        return ResponseHandler.generateResponse("User authenticated", HttpStatus.OK, loginResponse);
+    }
+
+    @PostMapping("/refresh-token")
+    public ResponseEntity<Object> refreshToken(@RequestBody Map<String, String> refreshTokenRequest) {
+        String refreshToken = refreshTokenRequest.get("refreshToken");
+        String newAccessToken = jwtService.refreshAccessToken(refreshToken);
+        if (newAccessToken == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid refresh token");
+        }
+        Map<String, String> tokenResponse = new HashMap<>();
+        tokenResponse.put("accessToken", newAccessToken);
+        tokenResponse.put("refreshToken", refreshToken);
+
+        return ResponseEntity.ok(tokenResponse);
+    }
+}

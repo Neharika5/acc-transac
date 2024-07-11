@@ -251,3 +251,116 @@ public class JwtService {
         return Keys.hmacShaKeyFor(keyBytes);
     }
 }
++++++++
+package com.dtcc.intern.demo.service;
+
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.io.Decoders;
+import io.jsonwebtoken.security.Keys;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.stereotype.Service;
+
+import java.security.Key;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
+
+@Service
+public class JwtService {
+
+    @Value("${jwt.secret}")
+    private String secretKey;
+
+    // Access token validity period (5 minutes)
+    private static final long ACCESS_TOKEN_VALIDITY = 5 * 60 * 1000; 
+
+    // Refresh token validity period (30 days)
+    private static final long REFRESH_TOKEN_VALIDITY = 30 * 24 * 60 * 60 * 1000; 
+
+    // Generate an access token for the given user
+    public String generateToken(UserDetails userDetails) {
+        return generateToken(new HashMap<String, Object>(), userDetails);
+    }
+
+    // Generate an access token with additional claims for the given user
+    public String generateToken(Map<String, Object> extraClaims, UserDetails userDetails) {
+        return buildToken(extraClaims, userDetails, ACCESS_TOKEN_VALIDITY);
+    }
+
+    // Generate a refresh token for the given user
+    public String generateRefreshToken(UserDetails userDetails) {
+        return buildToken(new HashMap<String, Object>(), userDetails, REFRESH_TOKEN_VALIDITY);
+    }
+
+    // Build a token with the given claims, user details, and expiration period
+    private String buildToken(Map<String, Object> extraClaims, UserDetails userDetails, long expiration) {
+        return Jwts.builder()
+                .setClaims(extraClaims)
+                .setSubject(userDetails.getUsername())
+                .setIssuedAt(new Date(System.currentTimeMillis()))
+                .setExpiration(new Date(System.currentTimeMillis() + expiration))
+                .signWith(getSignInKey(), SignatureAlgorithm.HS256)
+                .compact();
+    }
+
+    // Refresh the access token using a refresh token
+    public String refreshAccessToken(String refreshToken) {
+        if (!isTokenExpired(refreshToken)) {
+            Claims claims = getClaims(refreshToken);
+            return buildToken(new HashMap<String, Object>(), claims.getSubject(), ACCESS_TOKEN_VALIDITY);
+        }
+        return null;
+    }
+
+    // Extract claims from the given token
+    private Claims getClaims(String token) {
+        return Jwts.parserBuilder()
+                .setSigningKey(getSignInKey())
+                .build()
+                .parseClaimsJws(token)
+                .getBody();
+    }
+
+    // Check if the given token is expired
+    private boolean isTokenExpired(String token) {
+        return extractExpiration(token).before(new Date());
+    }
+
+    // Extract the expiration date from the given token
+    private Date extractExpiration(String token) {
+        return extractClaim(token, new ClaimsResolver<Date>() {
+            public Date resolve(Claims claims) {
+                return claims.getExpiration();
+            }
+        });
+    }
+
+    // Extract a specific claim from the given token using a claims resolver function
+    public <T> T extractClaim(String token, ClaimsResolver<T> claimsResolver) {
+        final Claims claims = extractAllClaims(token);
+        return claimsResolver.resolve(claims);
+    }
+
+    // Extract all claims from the given token
+    private Claims extractAllClaims(String token) {
+        return Jwts.parserBuilder()
+                .setSigningKey(getSignInKey())
+                .build()
+                .parseClaimsJws(token)
+                .getBody();
+    }
+
+    // Get the signing key for verifying and creating tokens
+    private Key getSignInKey() {
+        byte[] keyBytes = Decoders.BASE64.decode(secretKey);
+        return Keys.hmacShaKeyFor(keyBytes);
+    }
+
+    // Interface to resolve claims
+    public interface ClaimsResolver<T> {
+        T resolve(Claims claims);
+    }
+}

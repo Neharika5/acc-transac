@@ -1,0 +1,281 @@
+package com.dtcc.intern.demo.model;
+
+import javax.persistence.*;
+import java.util.Date;
+
+@Entity
+public class RefreshToken {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false, unique = true)
+    private String token;
+
+    @Column(nullable = false)
+    private Date expiryDate;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private UserAccount user;
+
+    // Getters and Setters
+
+    public Long getId() {
+        return id;
+    }
+
+    public void setId(Long id) {
+        this.id = id;
+    }
+
+    public String getToken() {
+        return token;
+    }
+
+    public void setToken(String token) {
+        this.token = token;
+    }
+
+    public Date getExpiryDate() {
+        return expiryDate;
+    }
+
+    public void setExpiryDate(Date expiryDate) {
+        this.expiryDate = expiryDate;
+    }
+
+    public UserAccount getUser() {
+        return user;
+    }
+
+    public void setUser(UserAccount user) {
+        this.user = user;
+    }
+}
+=======================
+package com.dtcc.intern.demo.repository;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import com.dtcc.intern.demo.model.RefreshToken;
+import java.util.Optional;
+
+public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long> {
+    Optional<RefreshToken> findByToken(String token);
+    void deleteByUser(UserAccount user);
+}
+======================
+package com.dtcc.intern.demo.service;
+
+import io.jsonwebtoken.*;
+import io.jsonwebtoken.io.Decoders;
+import io.jsonwebtoken.security.Keys;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.stereotype.Service;
+import com.dtcc.intern.demo.model.RefreshToken;
+import com.dtcc.intern.demo.model.UserAccount;
+import com.dtcc.intern.demo.repository.RefreshTokenRepository;
+import java.security.Key;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
+
+@Service
+public class JwtService {
+    @Value("${security.jwt.secret-key}")
+    private String secretKey;
+
+    @Value("${security.jwt.expiration-time}")
+    private long jwtExpiration;
+
+    @Value("${security.jwt.refresh-expiration-time}")
+    private long refreshExpiration;
+
+    private final RefreshTokenRepository refreshTokenRepository;
+
+    public JwtService(RefreshTokenRepository refreshTokenRepository) {
+        this.refreshTokenRepository = refreshTokenRepository;
+    }
+
+    public String extractUsername(String token) {
+        return extractClaim(token, Claims::getSubject);
+    }
+
+    public <T> T extractClaim(String token, Function<Claims, T> claimsResolver) {
+        final Claims claims = extractAllClaims(token);
+        return claimsResolver.apply(claims);
+    }
+
+    public String generateToken(UserDetails userDetails) {
+        return generateToken(new HashMap<>(), userDetails);
+    }
+
+    public String generateToken(Map<String, Object> extraClaims, UserDetails userDetails) {
+        return buildToken(extraClaims, userDetails, jwtExpiration);
+    }
+
+    public String generateRefreshToken(UserDetails userDetails) {
+        UserAccount user = (UserAccount) userDetails;
+        refreshTokenRepository.deleteByUser(user);  // Remove old refresh tokens
+        String refreshToken = buildToken(new HashMap<>(), userDetails, refreshExpiration);
+        RefreshToken token = new RefreshToken();
+        token.setToken(refreshToken);
+        token.setExpiryDate(new Date(System.currentTimeMillis() + refreshExpiration));
+        token.setUser(user);
+        refreshTokenRepository.save(token);
+        return refreshToken;
+    }
+
+    private String buildToken(Map<String, Object> extraClaims, UserDetails userDetails, long expiration) {
+        return Jwts.builder()
+                .setClaims(extraClaims)
+                .setSubject(userDetails.getUsername())
+                .setIssuedAt(new Date(System.currentTimeMillis()))
+                .setExpiration(new Date(System.currentTimeMillis() + expiration))
+                .signWith(getSignInKey(), SignatureAlgorithm.HS256)
+                .compact();
+    }
+
+    public boolean isTokenValid(String token, UserDetails userDetails) {
+        final String username = extractUsername(token);
+        return (username.equals(userDetails.getUsername())) && !isTokenExpired(token);
+    }
+
+    private boolean isTokenExpired(String token) {
+        return extractExpiration(token).before(new Date());
+    }
+
+    private Date extractExpiration(String token) {
+        return extractClaim(token, Claims::getExpiration);
+    }
+
+    private Claims extractAllClaims(String token) {
+        return Jwts.parserBuilder()
+                .setSigningKey(getSignInKey())
+                .build()
+                .parseClaimsJws(token)
+                .getBody();
+    }
+
+    private Key getSignInKey() {
+        byte[] keyBytes = Decoders.BASE64.decode(secretKey);
+        return Keys.hmacShaKeyFor(keyBytes);
+    }
+
+    public boolean isRefreshTokenValid(String token) {
+        Optional<RefreshToken> refreshToken = refreshTokenRepository.findByToken(token);
+        return refreshToken.isPresent() && !refreshToken.get().getExpiryDate().before(new Date());
+    }
+}
+======================
+package com.dtcc.intern.demo.service;
+
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+import com.dtcc.intern.demo.model.UserAccount;
+import com.dtcc.intern.demo.repository.UserAccountRepository;
+import com.dtcc.intern.demo.reqres.LoginUserDto;
+import com.dtcc.intern.demo.reqres.RegisterUserDto;
+
+@Service
+public class AuthenticationService {
+    private final UserAccountRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final AuthenticationManager authenticationManager;
+
+    public AuthenticationService(UserAccountRepository userRepository, AuthenticationManager authenticationManager, PasswordEncoder passwordEncoder) {
+        this.authenticationManager = authenticationManager;
+        this.userRepository = userRepository;
+        this.passwordEncoder = passwordEncoder;
+    }
+
+    public UserAccount signup(RegisterUserDto input) {
+        UserAccount user = new UserAccount();
+        user.setEmail(input.getEmail());
+        user.setFullName(input.getFullName());
+        user.setPassword(passwordEncoder.encode(input.getPassword()));
+
+        return userRepository.save(user);
+    }
+
+    public UserAccount authenticate(LoginUserDto input) {
+        authenticationManager.authenticate(
+                new UsernamePasswordAuthenticationToken(input.getEmail(), input.getPassword())
+        );
+
+        return userRepository.findByEmail(input.getEmail())
+                .orElseThrow();
+    }
+
+    public UserAccount loadUserByUsername(String email) {
+        return userRepository.findByEmail(email)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found"));
+    }
+}
+====================
+package com.dtcc.intern.demo.controller;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import com.dtcc.intern.demo.reqres.*;
+import com.dtcc.intern.demo.handler.ResponseHandler;
+import com.dtcc.intern.demo.model.*;
+import com.dtcc.intern.demo.service.*;
+
+import java.util.*;
+
+@RequestMapping("/auth")
+@RestController
+public class AuthenticationController {
+    private final JwtService jwtService;
+    private final AuthenticationService authenticationService;
+
+    public AuthenticationController(JwtService jwtService, AuthenticationService authenticationService) {
+        this.jwtService = jwtService;
+        this.authenticationService = authenticationService;
+    }
+
+    @PostMapping("/signup")
+    public ResponseEntity<UserAccount> register(@RequestBody RegisterUserDto registerUserDto) {
+        UserAccount registeredUser = authenticationService.signup(registerUserDto);
+
+        return ResponseEntity.ok(registeredUser);
+    }
+
+    @PostMapping("/login")
+    public ResponseEntity<Object> authenticate(@RequestBody LoginUserDto loginUserDto) {
+        UserAccount authenticatedUser = authenticationService.authenticate(loginUserDto);
+
+        String jwtToken = jwtService.generateToken(authenticatedUser);
+        String refreshToken = jwtService.generateRefreshToken(authenticatedUser);
+
+        Map<String, Object> loginResponse = new HashMap<>();
+        loginResponse.put("user", authenticatedUser);
+        loginResponse.put("token", jwtToken);
+        loginResponse.put("refreshToken", refreshToken);
+        return ResponseHandler.generateResponse("User authenticated", HttpStatus.OK, loginResponse);
+    }
+
+    @PostMapping("/refresh-token")
+    public ResponseEntity<Object> refreshToken(@RequestBody Map<String, String> request) {
+        String refreshToken = request.get("refreshToken");
+        if (jwtService.isRefreshTokenValid(refreshToken)) {
+            String username = jwtService.extractUsername(refreshToken);
+            UserAccount user = (UserAccount) authenticationService.loadUserByUsername(username);
+            String newAccessToken = jwtService.generateToken(user);
+            Map<String, String> response = new HashMap<>();
+            response.put("token", newAccessToken);
+            return ResponseEntity.ok(response);
+        } else {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid refresh token");
+        }
+    }
+}
+===============
